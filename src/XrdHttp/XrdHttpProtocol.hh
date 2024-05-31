@@ -49,6 +49,7 @@
 #include "XrdHttpChecksumHandler.hh"
 #include "XrdHttpReadRangeHandler.hh"
 #include "XrdNet/XrdNetPMark.hh"
+#include "XrdSciTokens/XrdSciTokensRedir.hh"
 
 #include <openssl/ssl.h>
 
@@ -221,6 +222,7 @@ private:
   static int xtlsreuse(XrdOucStream &Config);
   static int xauth(XrdOucStream &Config);
   static int xkeepheadercase(XrdOucStream &Config);
+  static int xredirtoken(XrdOucStream &Config);
   
   static bool isRequiredXtractor; // If true treat secxtractor errors as fatal
   static XrdHttpSecXtractor *secxtractor;
@@ -451,5 +453,8 @@ protected:
 
   /// If set to true, the client-provided HTTP header keys will be inserted as-is in addition to their lower-cased version
   static bool keepHeaderCase;
+
+  /// Redirect helper from SciTokens
+  static XrdSciTokensRedir *m_redir;
 };
 #endif
