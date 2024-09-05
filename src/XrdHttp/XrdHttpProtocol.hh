@@ -331,12 +331,15 @@ private:
   bool ssldone;
 
   /// Flag indicating we should send a request for client TLS authentication
-  /// after the headers have finished processing.
+  /// after the status line has finished processing.
   bool postheaderwait;
 
   /// Flag indicating we should wait for a response to the post-header authentication
-  /// request (after headers have been processed).
+  /// request (after status line have been processed).
   bool postheaderauth;
+
+  /// Flag indicating the deferred auth has completed
+  bool postheaderauthdone;
 
   static XrdCryptoFactory *myCryptoFactory;
 
