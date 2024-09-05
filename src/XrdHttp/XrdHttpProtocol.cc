@@ -529,6 +529,7 @@ int XrdHttpProtocol::Process(XrdLink *lp) // We ignore the argument here
           ssl = (SSL*)xrdctx->Session();
           postheaderauth = false;
           postheaderwait = false;
+          postheaderauthdone = false;
         }
 
       if (!ssl) {
@@ -661,7 +662,7 @@ int XrdHttpProtocol::Process(XrdLink *lp) // We ignore the argument here
 #if OPENSSL_VERSION_NUMBER >= 0x10100010L
         // We permit TLS client auth to be deferred until after the request path is sent.
         // If this is a path requiring client auth, then do that now.
-        if (tlsClientAuth == XrdTlsContext::ClientAuthSetting::kDefer)
+        if (!postheaderauthdone && tlsClientAuth == XrdTlsContext::ClientAuthSetting::kDefer)
            {for (const auto &prefix : tlsAuthRequestPrefixes) {
                {if (!strncmp(prefix.c_str(), CurrentReq.resource.c_str(), prefix.length()))
                    {postheaderwait = true;
@@ -733,6 +734,7 @@ int XrdHttpProtocol::Process(XrdLink *lp) // We ignore the argument here
   }
   if (postheaderauth) {
     postheaderauth = false;
+    postheaderauthdone = true;
     size_t readbytes;
     TRACEI(REQ, "Reading out response to post-handshake authentication");
     BIO_set_nbio(sbio, 1);
