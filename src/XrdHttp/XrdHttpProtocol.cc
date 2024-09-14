@@ -42,6 +42,7 @@
 
 #include "XrdTls/XrdTls.hh"
 #include "XrdTls/XrdTlsContext.hh"
+#include "XrdTls/XrdTlsSocket.hh"
 #include "XrdOuc/XrdOucUtils.hh"
 #include "XrdOuc/XrdOucPrivateUtils.hh"
 
@@ -525,7 +526,10 @@ int XrdHttpProtocol::Process(XrdLink *lp) // We ignore the argument here
       if (!ssl) {
           sbio = CreateBIO(Link);
           BIO_set_nbio(sbio, 1);
-          xrdctx->SetTlsClientAuth(tlsClientAuth);
+          if (!xrdctx->SetTlsClientAuth(tlsClientAuth)) {
+            TRACE(ALL, "Failed to configure the TLS client authentication; invalid configuration");
+            return -1;
+          }
           ssl = (SSL*)xrdctx->Session();
           postheaderauth = false;
           postheaderwait = false;
@@ -659,7 +663,6 @@ int XrdHttpProtocol::Process(XrdLink *lp) // We ignore the argument here
           return -1;
         }
 
-#if OPENSSL_VERSION_NUMBER >= 0x10100010L
         // We permit TLS client auth to be deferred until after the request path is sent.
         // If this is a path requiring client auth, then do that now.
         if (!postheaderauthdone && tlsClientAuth == XrdTlsContext::ClientAuthSetting::kDefer)
@@ -672,7 +675,6 @@ int XrdHttpProtocol::Process(XrdLink *lp) // We ignore the argument here
                }
             }
            }
-#endif
       } else {
         int result = CurrentReq.parseLine((char *) tmpline.c_str(), rc);
         if(result < 0) {
@@ -708,40 +710,32 @@ int XrdHttpProtocol::Process(XrdLink *lp) // We ignore the argument here
   }
 
 
-#if OPENSSL_VERSION_NUMBER >= 0x10100010L
   if (postheaderwait) {
     postheaderwait = false;
-    if (SSL_verify_client_post_handshake(ssl) != 1) {
-      // This is hit if the remote client doesn't support the post-handshake authentication
-      // (curl, Mac OSX) or TLS v1.3 (RHEL7).
-      TRACEI(ALL, "Unable to request client X.509 authentication");
-      ERR_print_errors(sslbio_err);
-    } else {
-      // We must invoke an empty write to trigger the authentication request in the TLS layer.
-      size_t write_size;
-      auto res = SSL_write_ex(ssl, nullptr, 0, &write_size);
-      if (res <= 0) {
-        TRACEI(DEBUG, " SSL post-handshake auth failed; err:" << SSL_get_error(ssl, res));
-        ERR_print_errors(sslbio_err);
-        SendSimpleResp(500, nullptr, nullptr, "Failed post-handshake authentication", 0, false);
-        return -1;
-      } else {
+    auto res = XrdTlsSocket::PostAuthHandshake(ssl);
+    switch (res) {
+    case XrdTls::TLS_AOK:
         TRACEI(DEBUG, " SSL post-handshake auth finished successfully");
         postheaderauth = true;
         return 1;
-      }
+    case XrdTls::TLS_SRV_Support: // fallthrough
+    case XrdTls::TLS_CLT_Support:
+        break;
+    case XrdTls::TLS_SSL_Error:
+        SendSimpleResp(500, nullptr, nullptr, "Failed post-handshake authentication", 0, false);
+        return -1;
+    default:
+        SendSimpleResp(500, nullptr, nullptr, "Failed post-handshake authentication due to unknown error", 0, false);
+        return -1;
     }
   }
   if (postheaderauth) {
     postheaderauth = false;
     postheaderauthdone = true;
-    size_t readbytes;
     TRACEI(REQ, "Reading out response to post-handshake authentication");
-    BIO_set_nbio(sbio, 1);
-    auto res = SSL_peek_ex(ssl, nullptr, 0, &readbytes);
-    if ((res <= 0) && SSL_get_error(ssl, res) != SSL_ERROR_WANT_READ) {
-      SendSimpleResp(500, nullptr, nullptr, "Failed to process authentication frames", 0, false);
-      return -1;
+
+    if (XrdTlsSocket::PostAuthHandshakeFinish(ssl)) {
+        SendSimpleResp(500, nullptr, nullptr, "Failed to process authentication frames", 0, false);
     }
     BIO_set_nbio(sbio, 0);
     if (HandleAuthentication(Link)) {
@@ -749,7 +743,6 @@ int XrdHttpProtocol::Process(XrdLink *lp) // We ignore the argument here
       return -1;
     }
   }
-#endif
 
   // If we are in self-redirect mode, then let's do it
   // Do selfredirect only with 'simple' requests, otherwise poor clients may misbehave

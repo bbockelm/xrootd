@@ -188,13 +188,14 @@ enum ClientAuthSetting {
 //!                         certificate;
 //!                 kDefer: Only ask for a TLS client certificate
 //!                         explicitly post-authentication.
+//! @return True if the client auth was configured; False on failure.
 //!
 //! Note the TLS connection will not fail if the client is asked for a cert
 //! but none are provided.
 //!
 //------------------------------------------------------------------------
 
-      void      SetTlsClientAuth(ClientAuthSetting setting);
+      bool      SetTlsClientAuth(ClientAuthSetting setting);
 
 //------------------------------------------------------------------------
 //! Check if certificates are being verified.
