@@ -485,11 +485,10 @@ int XrdOfsFile::open(const char          *path,      // In
 
    struct OpenHelper
          {const char   *Path;
-          bool          isOpening;
+          bool          isOpening{false}; // Indicates whether an open is in-progress.  A reference to this is passed to the XrdOfsHandle and is protected by a condition variable
           XrdOfsHandle *hP;
           XrdOssDF     *fP;
           int           poscNum;
-          int           retc{-EIO};
 
           int           OK() {hP = 0; fP = 0; poscNum = 0; return SFS_OK;}
 
@@ -497,7 +496,8 @@ int XrdOfsFile::open(const char          *path,      // In
                        : Path(path), hP(0), fP(0), poscNum(0) {}
 
                        ~OpenHelper()
-                       {if (hP)
+                       {int retc{-EIO};
+                        if (hP)
                            {hP->FinishOpen(retc);
                             hP->Retire(retc);
                            }
@@ -508,7 +508,7 @@ int XrdOfsFile::open(const char          *path,      // In
 
    mode_t theMode = (Mode | XrdOfsFS->fMask[0]) & XrdOfsFS->fMask[1];
    const char *tpcKey;
-   int isPosc = 0, crOpts = 0, isRW = 0, open_flag = 0;
+   int retc, isPosc = 0, crOpts = 0, isRW = 0, open_flag = 0;
    int find_flag = open_mode & (SFS_O_NOWAIT | SFS_O_RESET | SFS_O_MULTIW);
    XrdOucEnv Open_Env(info,0,client);
 
@@ -579,9 +579,9 @@ int XrdOfsFile::open(const char          *path,      // In
 // If we have a finder object, use it to direct the client. The final
 // destination will apply the security that is needed
 //
-   if (XrdOfsFS->Finder && (oP.retc = XrdOfsFS->Finder->Locate(error, path,
+   if (XrdOfsFS->Finder && (retc = XrdOfsFS->Finder->Locate(error, path,
                                                    find_flag, &Open_Env)))
-      return XrdOfsFS->fsError(error, oP.retc);
+      return XrdOfsFS->fsError(error, retc);
 
 // Preset TPC handling and if not allowed, complain
 //
@@ -628,20 +628,20 @@ int XrdOfsFile::open(const char          *path,      // In
        // Create the file. If ENOTSUP is returned, promote the creation to
        // the subsequent open. This is to accomodate proxy support.
        //
-       if ((oP.retc = XrdOfsOss->Create(tident, path, theMode, Open_Env,
+       if ((retc = XrdOfsOss->Create(tident, path, theMode, Open_Env,
                                      ((open_flag << 8) | crOpts))))
-          {if (oP.retc > 0) return XrdOfsFS->Stall(error, oP.retc, path);
-           if (oP.retc == -EINPROGRESS)
+          {if (retc > 0) return XrdOfsFS->Stall(error, retc, path);
+           if (retc == -EINPROGRESS)
               {XrdOfsFS->evrObject.Wait4Event(path,&error);
                return XrdOfsFS->fsError(error, SFS_STARTED);
               }
-           if (oP.retc != -ENOTSUP)
+           if (retc != -ENOTSUP)
               {// If we tried to overwrite an existing file but do not have the AOP_Create
                // privilege, then ensure we generate a 'permission denied' instead of 'exists'
-               if ((open_flag & O_EXCL) && oP.retc == -EEXIST && !overwrite_permitted)
-                  {oP.retc = -EACCES;}
+               if ((open_flag & O_EXCL) && retc == -EEXIST && !overwrite_permitted)
+                  {retc = -EACCES;}
                if (XrdOfsFS->Balancer) XrdOfsFS->Balancer->Removed(path);
-               return XrdOfsFS->Emsg(epname, error, oP.retc, "create", path);
+               return XrdOfsFS->Emsg(epname, error, retc, "create", path);
               }
           } else {
             if (XrdOfsFS->Balancer) XrdOfsFS->Balancer->Added(path, isPosc);
@@ -659,7 +659,7 @@ int XrdOfsFile::open(const char          *path,      // In
        //
           if (tpcKey && !isRW)
              {XrdOfsTPC::Facts Args(client, &error, &Open_Env, tpcKey, path);
-              if ((oP.retc = XrdOfsTPC::Authorize(&myTPC, Args))) return oP.retc;
+              if ((retc = XrdOfsTPC::Authorize(&myTPC, Args))) return retc;
              } else {AUTHORIZE(client, &Open_Env, (isRW?AOP_Update:AOP_Read),
                                "open", path, error);
                     }
@@ -672,9 +672,9 @@ int XrdOfsFile::open(const char          *path,      // In
                     // share the result of the open the other thread performed.
    int openRC;  // If the other thread performed the open, this is the return code
                 // from that open.
-   if ((oP.retc = XrdOfsHandle::Alloc(path, isRW, &oP.hP, oP.isOpening, sharedOpen, openRC)))
-      {if (oP.retc > 0) return XrdOfsFS->Stall(error, oP.retc, path);
-       return XrdOfsFS->Emsg(epname, error, oP.retc, "attach", path);
+   if ((retc = XrdOfsHandle::Alloc(path, isRW, &oP.hP, oP.isOpening, sharedOpen, openRC)))
+      {if (retc > 0) return XrdOfsFS->Stall(error, retc, path);
+       return XrdOfsFS->Emsg(epname, error, retc, "attach", path);
       }
 
    // If the other thread's open failed, then we need to return the corresponding
@@ -701,20 +701,20 @@ int XrdOfsFile::open(const char          *path,      // In
 //
    if (tpcKey && isRW)
       {char pfnbuff[MAXPATHLEN+8]; const char *pfnP;
-       if (!(pfnP = XrdOfsOss->Lfn2Pfn(path, pfnbuff, MAXPATHLEN, oP.retc)))
-          return XrdOfsFS->Emsg(epname, error, oP.retc, "open", path);
+       if (!(pfnP = XrdOfsOss->Lfn2Pfn(path, pfnbuff, MAXPATHLEN, retc)))
+          return XrdOfsFS->Emsg(epname, error, retc, "open", path);
        XrdOfsTPC::Facts Args(client, &error, &Open_Env, tpcKey, path, pfnP);
-       if ((oP.retc = XrdOfsTPC::Validate(&myTPC, Args))) return oP.retc;
+       if ((retc = XrdOfsTPC::Validate(&myTPC, Args))) return retc;
       }
 
 // Assign/transfer posc ownership. We may need to delay the client if the
 // file create ownership does not match and this is not a create request.
 //
-   if (oP.hP->isPOSC())
+   if (oP.hP->isRW == XrdOfsHandle::opPC)
       {if (!isRW) return XrdOfsFS->Stall(error, -1, path);
-       if ((oP.retc = oP.hP->PoscSet(tident, oP.poscNum, theMode)))
-          {if (oP.retc > 0) XrdOfsFS->poscQ->Del(path, oP.retc);
-              else return XrdOfsFS->Emsg(epname, error, oP.retc, "access", path);
+       if ((retc = oP.hP->PoscSet(tident, oP.poscNum, theMode)))
+          {if (retc > 0) XrdOfsFS->poscQ->Del(path, retc);
+              else return XrdOfsFS->Emsg(epname, error, retc, "access", path);
           }
       }
 
@@ -723,7 +723,7 @@ int XrdOfsFile::open(const char          *path,      // In
 // multiple writers in tpc mode (this should really never happen).
 //
    if (!oP.hP->Inactive())
-      {dorawio = (oh->isCompressed() && open_mode & SFS_O_RAWIO ? 1 : 0);
+      {dorawio = (oh->isCompressed && open_mode & SFS_O_RAWIO ? 1 : 0);
        if (tpcKey && isRW)
           return XrdOfsFS->Emsg(epname, error, EALREADY, "tpc", path);
        XrdOfsFS->ocMutex.Lock(); oh = oP.hP; XrdOfsFS->ocMutex.UnLock();
@@ -756,27 +756,27 @@ int XrdOfsFile::open(const char          *path,      // In
 
 // Open the file
 //
-   if ((oP.retc = oP.fP->Open(path, open_flag, theMode, Open_Env)))
-      {if (oP.retc > 0) return XrdOfsFS->Stall(error, oP.retc, path);
-       if (oP.retc == -EINPROGRESS)
+   if ((retc = oP.fP->Open(path, open_flag, theMode, Open_Env)))
+      {if (retc > 0) return XrdOfsFS->Stall(error, retc, path);
+       if (retc == -EINPROGRESS)
           {XrdOfsFS->evrObject.Wait4Event(path,&error);
            return XrdOfsFS->fsError(error, SFS_STARTED);
           }
-       if (oP.retc == -ETXTBSY) return XrdOfsFS->Stall(error, -1, path);
-       if (oP.retc == -EDESTADDRREQ)
+       if (retc == -ETXTBSY) return XrdOfsFS->Stall(error, -1, path);
+       if (retc == -EDESTADDRREQ)
           {char *url = Open_Env.Get("FileURL");
            if (url) {error.setErrInfo(-1, url); return SFS_REDIRECT;}
           }
-       if (XrdOfsFS->Balancer && oP.retc == -ENOENT)
+       if (XrdOfsFS->Balancer && retc == -ENOENT)
           XrdOfsFS->Balancer->Removed(path);
-       return XrdOfsFS->Emsg(epname, error, oP.retc, "open", path);
+       return XrdOfsFS->Emsg(epname, error, retc, "open", path);
       }
 
 // Verify that we can actually use this file
 //
    if (oP.poscNum > 0)
-      {if ((oP.retc = oP.fP->Fchmod(static_cast<mode_t>(theMode|XRDSFS_POSCPEND))))
-          return XrdOfsFS->Emsg(epname, error, oP.retc, "fchmod", path);
+      {if ((retc = oP.fP->Fchmod(static_cast<mode_t>(theMode|XRDSFS_POSCPEND))))
+          return XrdOfsFS->Emsg(epname, error, retc, "fchmod", path);
        XrdOfsFS->poscQ->Commit(path, oP.poscNum);
       }
 
@@ -784,7 +784,7 @@ int XrdOfsFile::open(const char          *path,      // In
 //
    oP.hP->Lock();
    if (oP.fP->isCompressed() > 0)
-      {oP.hP->setCompressed(true);
+      {oP.hP->isCompressed = true;
        dorawio = (open_mode & SFS_O_RAWIO ? 1 : 0);
       }
    oP.hP->Activate(oP.fP);
@@ -875,9 +875,9 @@ int XrdOfsFile::close()  // In
 // Maintain statistics
 //
    OfsStats.sdMutex.Lock();
-   if (!hP->isRW()) OfsStats.Data.numOpenR--;
+   if (!(hP->isRW)) OfsStats.Data.numOpenR--;
       else {OfsStats.Data.numOpenW--;
-            if (hP->isPOSC()) OfsStats.Data.numOpenP--;
+            if (hP->isRW == XrdOfsHandle::opPC) OfsStats.Data.numOpenP--;
            }
    OfsStats.sdMutex.UnLock();
 
@@ -917,13 +917,13 @@ int XrdOfsFile::close()  // In
 // don't bother with any of it if we need not generate an event.
 //
    if (XrdOfsFS->evsObject && tident
-   &&  XrdOfsFS->evsObject->Enabled(hP->isRW() ? XrdOfsEvs::Closew
+   &&  XrdOfsFS->evsObject->Enabled(hP->isRW ? XrdOfsEvs::Closew
                                              : XrdOfsEvs::Closer))
       {long long FSize, *retsz;
        char pathbuff[MAXPATHLEN+8];
        XrdOfsEvs::Event theEvent;
-       if (hP->isRW()) {theEvent = XrdOfsEvs::Closew; retsz = &FSize;}
-          else {        theEvent = XrdOfsEvs::Closer; retsz = 0; FSize=0;}
+       if (hP->isRW) {theEvent = XrdOfsEvs::Closew; retsz = &FSize;}
+          else {      theEvent = XrdOfsEvs::Closer; retsz = 0; FSize=0;}
        if (!(hP->Retire(cRetc, retsz, pathbuff, sizeof(pathbuff))))
           {XrdOfsEvsInfo evInfo(tident, pathbuff, "" , 0, 0, FSize);
            XrdOfsFS->evsObject->Notify(theEvent, evInfo);
@@ -1041,12 +1041,12 @@ int            XrdOfsFile::CreateCKP()
 
 // Verify that this file is open r/w mode
 //
-   if (!oh->isRW()) return XrdOfsFS->Emsg("CreateCKP", error, ENOTTY,
+   if (!(oh->isRW)) return XrdOfsFS->Emsg("CreateCKP", error, ENOTTY,
                            "create checkpoint for R/O", oh->Name());
 
 // POSC and checkpoints are mutally exclusive
 //
-   if (oh->isPOSC())
+   if (oh->isRW == XrdOfsHandle::opPC)
       return XrdOfsFS->Emsg("CreateCKP", error, ENOTTY,
                             "create checkpoint for POSC file", oh->Name());
 
@@ -1181,7 +1181,7 @@ XrdSfsXferSize XrdOfsFile::pgRead(XrdSfsAio *aioparm, uint64_t opts)
 // the standard async read will generate checksums if a vector is present.
 // Note: we set cksVec in the request to nil to indicate simulation!
 //
-   if (!XrdOfsFS->OssHasPGrw || dorawio || oh->isCompressed())
+   if (!XrdOfsFS->OssHasPGrw || dorawio || oh->isCompressed)
       {aioparm->cksVec = 0;
        return XrdOfsFile::read(aioparm);
       }
@@ -1247,7 +1247,7 @@ XrdSfsXferSize XrdOfsFile::pgWrite(XrdSfsFileOffset   offset,
 
 // Silly Castor stuff
 //
-   if (XrdOfsFS->evsObject && !oh->isChanged()
+   if (XrdOfsFS->evsObject && !(oh->isChanged)
    &&  XrdOfsFS->evsObject->Enabled(XrdOfsEvs::Fwrite)) GenFWEvent();
 
 // Pass through any flags of interest
@@ -1257,7 +1257,7 @@ XrdSfsXferSize XrdOfsFile::pgWrite(XrdSfsFileOffset   offset,
 
 // Write the requested bytes
 //
-   oh->setPending(true);
+   oh->isPending = 1;
    nbytes = (XrdSfsXferSize)(oh->Select().pgWrite((void *)buffer,
                             (off_t)offset, (size_t)wrlen, csvec, pgOpts));
    if (nbytes < 0)
@@ -1290,7 +1290,7 @@ XrdSfsXferSize XrdOfsFile::pgWrite(XrdSfsAio *aioparm, uint64_t opts)
 // If this is a POSC file, we must convert the async call to a sync call as we
 // must trap any errors that unpersist the file. We can't do that via aio i/f.
 //
-   if (oh->isPOSC())
+   if (oh->isRW == XrdOfsHandle::opPC)
       {aioparm->Result = XrdOfsFile::pgWrite(aioparm->sfsAio.aio_offset,
                                      (char *)aioparm->sfsAio.aio_buf,
                                              aioparm->sfsAio.aio_nbytes,
@@ -1312,7 +1312,7 @@ XrdSfsXferSize XrdOfsFile::pgWrite(XrdSfsAio *aioparm, uint64_t opts)
 
 // Silly Castor stuff
 //
-   if (XrdOfsFS->evsObject && !oh->isChanged()
+   if (XrdOfsFS->evsObject && !(oh->isChanged)
    &&  XrdOfsFS->evsObject->Enabled(XrdOfsEvs::Fwrite)) GenFWEvent();
 
 // Pass through any flags of interest
@@ -1322,7 +1322,7 @@ XrdSfsXferSize XrdOfsFile::pgWrite(XrdSfsAio *aioparm, uint64_t opts)
 
 // Write the requested bytes
 //
-   oh->setPending(true);
+   oh->isPending = 1;
    if ((rc = oh->Select().pgWrite(aioparm, pgOpts)) < 0)
        return XrdOfsFS->Emsg(epname, error, rc, "pgwrite", oh->Name());
 
@@ -1467,7 +1467,7 @@ int XrdOfsFile::read(XrdSfsAio *aiop)
 
 // Async mode for compressed files is not supported.
 //
-   if (oh->isCompressed())
+   if (oh->isCompressed)
       {aiop->Result = this->read((XrdSfsFileOffset)aiop->sfsAio.aio_offset,
                                            (char *)aiop->sfsAio.aio_buf,
                                    (XrdSfsXferSize)aiop->sfsAio.aio_nbytes);
@@ -1534,12 +1534,12 @@ XrdSfsXferSize XrdOfsFile::write(XrdSfsFileOffset  offset,    // In
 
 // Silly Castor stuff
 //
-   if (XrdOfsFS->evsObject && !oh->isChanged()
+   if (XrdOfsFS->evsObject && !(oh->isChanged)
    &&  XrdOfsFS->evsObject->Enabled(XrdOfsEvs::Fwrite)) GenFWEvent();
 
 // Write the requested bytes
 //
-   oh->setPending(true);
+   oh->isPending = 1;
    nbytes = (XrdSfsXferSize)(oh->Select().Write((const void *)buff,
                             (off_t)offset, (size_t)blen));
    if (nbytes < 0)
@@ -1568,7 +1568,7 @@ int XrdOfsFile::write(XrdSfsAio *aiop)
 // If this is a POSC file, we must convert the async call to a sync call as we
 // must trap any errors that unpersist the file. We can't do that via aio i/f.
 //
-   if (oh->isPOSC())
+   if (oh->isRW == XrdOfsHandle::opPC)
       {aiop->Result = this->write(aiop->sfsAio.aio_offset,
                                   (const char *)aiop->sfsAio.aio_buf,
                                   aiop->sfsAio.aio_nbytes);
@@ -1585,12 +1585,12 @@ int XrdOfsFile::write(XrdSfsAio *aiop)
 
 // Silly Castor stuff
 //
-   if (XrdOfsFS->evsObject && !oh->isChanged()
+   if (XrdOfsFS->evsObject && !(oh->isChanged)
    &&  XrdOfsFS->evsObject->Enabled(XrdOfsEvs::Fwrite)) GenFWEvent();
 
 // Write the requested bytes
 //
-   oh->setPending(true);
+   oh->isPending = 1;
    if ((rc = oh->Select().Write(aiop)) < 0)
        return XrdOfsFS->Emsg(epname, error, rc, "write", oh->Name());
 
@@ -1672,18 +1672,24 @@ int XrdOfsFile::sync()  // In
 //
    if (myTPC && (retc = myTPC->Sync(&error))) return retc;
 
-// If the file handle does not have pending unsynced data, then we can
-// skip the sync.
-   if (!oh->isPending()) return SFS_OK;
+// We can test the pendio flag w/o a lock because the person doing this
+// sync must have done the previous write. Causality is the synchronizer.
+//
+   if (!(oh->isPending)) return SFS_OK;
+
+// We can also skip the sync if the file is closed. However, we need a file
+// object lock in order to test the flag. We can also reset the PENDIO flag.
+//
+   oh->Lock();
+   oh->isPending = 0;
+   oh->UnLock();
 
 // Perform the function
 //
    if ((retc = oh->Select().Fsync()))
-      {return XrdOfsFS->Emsg(epname, error, retc, "synchronize", oh);
+      {oh->isPending = 1;
+       return XrdOfsFS->Emsg(epname, error, retc, "synchronize", oh);
       }
-
-   // Reset the pending flag as we have successfully synced the file
-   oh->setPending(false);
 
 // Indicate all went well
 //
@@ -1736,12 +1742,12 @@ int XrdOfsFile::truncate(XrdSfsFileOffset  flen)  // In
 
 // Silly Castor stuff
 //
-   if (XrdOfsFS->evsObject && !oh->isChanged()
+   if (XrdOfsFS->evsObject && !(oh->isChanged)
    &&  XrdOfsFS->evsObject->Enabled(XrdOfsEvs::Fwrite)) GenFWEvent();
 
 // Perform the function
 //
-   oh->setPending(true);
+   oh->isPending = 1;
    if ((retc = oh->Select().Ftruncate(flen)))
       return XrdOfsFS->Emsg(epname, error, retc, "truncate", oh);
 
@@ -1782,10 +1788,16 @@ int XrdOfsFile::getCXinfo(char cxtype[4], int &cxrsz)
   
 void XrdOfsFile::GenFWEvent()
 {
+   int first_write;
+
+
 // This silly code is to generate a 1st write event which slows things down
 // but is needed by the one and only Castor. What a big sigh!
 //
-   if (oh->setChanged())
+   oh->Lock();
+   if ((first_write = !(oh->isChanged))) oh->isChanged = 1;
+   oh->UnLock();
+   if (first_write)
       {XrdOfsEvsInfo evInfo(tident, oh->Name());
        XrdOfsFS->evsObject->Notify(XrdOfsEvs::Fwrite, evInfo);
       }
@@ -2546,7 +2558,7 @@ int XrdOfs::Emsg(const char    *pfx,    // Message prefix value
 // If this is a POSC file then we need to unpersist it. Note that we are always
 // called with the handle **unlocked**
 //
-   if (hP->isPOSC())
+   if (hP->isRW == XrdOfsHandle::opPC)
       {hP->Lock();
        XrdOfsFS->Unpersist(hP);
        hP->UnLock();

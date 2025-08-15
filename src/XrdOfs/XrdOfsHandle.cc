@@ -289,10 +289,7 @@ int XrdOfsHandle::Alloc(const char *thePath, int Opts, XrdOfsHandle **Handle, bo
       {hP->Path.Links++; myMutex.UnLock();
        std::unique_lock lock(hP->hMutex);
        *Handle = hP;
-       if (!hP->isOpening())
-          {//OfsEroute.Emsg("Alloc", "File handle open is not pending");
-           return 0;
-          }
+       if (!hP->isOpening()) return 0;
 
        // Let the opening thread know that we are waiting
        sharedOpen = true;
@@ -318,7 +315,6 @@ int XrdOfsHandle::Alloc(const char *thePath, int Opts, XrdOfsHandle **Handle, bo
 // If we are here, then there is no existing handle for this path; we need to
 // allocate a new handle and tell the caller it is responsible for opening it.
 //
-   //OfsEroute.Emsg("Alloc", "Creating a new file handle");
    if (!(retc = Alloc(theKey, Opts, Handle))) theTable->Add(*Handle);
    OfsStats.Add(OfsStats.Data.numHandles);
    isOpening = true;
@@ -367,8 +363,10 @@ int XrdOfsHandle::Alloc(XrdOfsHanKey theKey, int Opts, XrdOfsHandle **Handle)
    if (hP)
       {hP->Path         = theKey;
        hP->Path.Links   = 1;
-       hP->setPOSC((Opts & opPC) == opPC);         // Indicate file is POSC
-       hP->setRW(Opts & opRW);                     // Indicate file is R/W
+       hP->isChanged    = 0;                       // File changed
+       hP->isCompressed = 0;                       // Compression
+       hP->isPending    = 0;                       // Pending output
+       hP->isRW         = (Opts & opPC);           // File mode
        hP->ssi          = ossDF;                   // No storage system yet
        hP->Posc         = 0;                       // No creator
        hP->Lock();                                 // Wait is not possible
@@ -533,7 +531,7 @@ int XrdOfsHandle::Retire(int &retc, long long *retsz, char *buff, int blen)
    if (Path.Links == 1)
       {if (buff) strlcpy(buff, Path.Val, blen);
        numLeft = 0; OfsStats.Dec(OfsStats.Data.numHandles);
-       if ( (isRW() ? rwTable.Remove(this) : roTable.Remove(this)) )
+       if ( (isRW ? rwTable.Remove(this) : roTable.Remove(this)) )
          {if (Posc) {Posc->Recycle(); Posc = 0;}
           if (Path.Val) {free((void *)Path.Val); Path.Val = (char *)"";}
           Path.Len = 0; mySSI = ssi; ssi = ossDF;
@@ -653,7 +651,7 @@ void XrdOfsHandle::Suppress(int rrc, int wrc)
 /* public                       W a i t L o c k                               */
 /******************************************************************************/
   
-bool XrdOfsHandle::WaitLock()
+int XrdOfsHandle::WaitLock(void)
 {
 // Try to obtain a lock within the retry parameters
 //

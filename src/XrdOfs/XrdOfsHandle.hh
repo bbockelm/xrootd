@@ -131,29 +131,19 @@ friend class XrdOfsHanTab;
 friend class XrdOfsHanXpr;
 public:
 
+char                isPending;    // 1-> File  is pending sync()
+char                isChanged;    // 1-> File was modified
+char                isCompressed; // 1-> File  is compressed
+char                isRW;         // T-> File  is open in r/w mode
+
 void                Activate(XrdOssDF *ssP);
 
 static const int    opRW = 1;
 static const int    opPC = 3;
 
-      bool isChanged() const {return (m_isChanged.load(std::memory_order_acquire) != 0);}
-      // Set the changed flag to true and return if it was previously false.
-      //
-      // The return value indicates whether this was the first time the file was written to.
-      bool setChanged() {
-            char oldVal;
-            return m_isChanged.compare_exchange_strong(oldVal, 1, std::memory_order_acq_rel);
-      }
-      bool isCompressed() const {return (m_properties & propIsCompressed);}
-      bool isOpening() const {return (m_properties & propIsOpening);}
-      bool isPending() const {return m_pending.load(std::memory_order_acquire);}
-      bool isPOSC() const {return (m_properties & propIsPOSC) == propIsPOSC;}
-      bool isRW() const {return (m_properties & propIsRW);}
-      void setCompressed(bool val) {if (val) m_properties |= propIsCompressed; else m_properties &= ~propIsCompressed;}
-      void setOpening(bool val) {if (val) m_properties |= propIsOpening; else m_properties &= ~propIsOpening;}
-      void setPending(bool val) {m_pending.store(val ? 1 : 0, std::memory_order_release);}
-      void setPOSC(bool val) {if (val) m_properties |= propIsPOSC; else m_properties &= ~propIsPOSC;}
-      void setRW(bool val) {if (val) m_properties |= propIsRW; else m_properties &= ~propIsRW;}
+             bool   isOpening() const {return (m_properties & propIsOpening);}
+             void   setOpening(bool val) {if (val) m_properties |= propIsOpening; else m_properties &= ~propIsOpening;}
+
 
 // Allocate a new OFS handle in the global table for the specified path.
 //
@@ -204,7 +194,7 @@ inline       void   UnLock() {hMutex.unlock();}
 private:
 static int           Alloc(XrdOfsHanKey, int Opts, XrdOfsHandle **Handle);
        void          FinishOpenWithLock(int retc);
-       bool          WaitLock();
+       int           WaitLock(void);
 
 static const int     LockTries =   3; // Times to try for a lock
 static const int     LockWait  = 333; // Mills to wait between tries
@@ -217,30 +207,17 @@ static XrdOfsHanTab  rwTable;    // File Handles open r/w
 static XrdOssDF     *ossDF;      // Dummy storage sysem
 static XrdOfsHandle *Free;       // List of free handles
 
-// The properties of the file handle that do not use atomic synchronization.
-// Note that the alignment is 4 bytes total on 32-bit (8 bytes on x86-64).
-// As long as we don't use more than 4 char's for various properties, then
-// the size of the XrdOfsHandle class will not grow.
+       // Bitmask for various properties that can be set about the file.
+       // Going forward, these are to be added to a bitmask instead of
+       // separate class attributes.
        enum {
             propIsOpening    = 0x01, // File open is in progress
-            propIsCompressed = 0x02, // File is compressed
-            propIsRW         = 0x04, // File is open in r/w mode
-            propIsPOSC       = 0x04 | 0x08 // File is open in POSC mode; note
-                                           // POSC implies RW but not the other
-                                           // way around.
-       };
-       char              m_properties{0};
-
-       // m_pending is set to 1 when data is pending (e.g., a write has occurred)
-       // When it is set by a writer, we need all subsequent readers to see it
-       std::atomic<char> m_pending{0};
-
-       // m_isChanged is set to 1 when the file has been modified; this is used to
-       // know when to generate the "first write" event.  Done as an atomic to prevent
-       // needing to synchronize via the mutex.
-       std::atomic<char> m_isChanged{0};
+	};
+	char m_properties{0};
 
        std::timed_mutex hMutex;
+       XrdOssDF *ssi;                      // Storage System Interface
+
        std::condition_variable_any m_open_cond; // Condition variable for open completion
 
        struct XrdOfsHandleOpenWaiter {
@@ -249,11 +226,9 @@ static XrdOfsHandle *Free;       // List of free handles
        };
        XrdOfsHandleOpenWaiter *FirstWaiter{nullptr}; // Next handle waiting for open
 
-       XrdOssDF *ssi;                      // Storage System Interface
-
-       XrdOfsHanPsc *Posc;       // -> Info for posc-type files
        XrdOfsHandle *Next;
        XrdOfsHanKey  Path;       // Path for this handle
+       XrdOfsHanPsc *Posc;       // -> Info for posc-type files
 };
   
 /******************************************************************************/
